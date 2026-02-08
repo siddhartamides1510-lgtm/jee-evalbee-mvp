@@ -2,173 +2,167 @@
 
 import { useEffect, useRef, useState } from "react";
 
-type Step = "select" | "capture" | "preview";
-
 export default function ScanPage() {
-  const [step, setStep] = useState<Step>("select");
-  const [status, setStatus] = useState("");
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
-  async function openCamera() {
-    setStatus("");
+  const [status, setStatus] = useState<
+    "idle" | "starting" | "ready" | "error"
+  >("idle");
+  const [errorMsg, setErrorMsg] = useState<string>("");
+
+  async function stopCamera() {
+    try {
+      const stream = streamRef.current;
+      if (stream) {
+        stream.getTracks().forEach((t) => t.stop());
+      }
+      streamRef.current = null;
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+      }
+
+      setStatus("idle");
+      setErrorMsg("");
+    } catch {
+      // ignore
+    }
+  }
+
+  async function startCamera() {
+    setStatus("starting");
+    setErrorMsg("");
+
+    // Always stop old stream first (prevents black screen / stuck camera)
+    await stopCamera();
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment" },
+        video: {
+          facingMode: { ideal: "environment" }, // rear camera
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
         audio: false,
       });
 
       streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
+
+      if (!videoRef.current) {
+        throw new Error("Video element not found");
       }
-      setStep("capture");
-    } catch (err) {
-      setStatus("❌ Camera permission denied or not available.");
+
+      videoRef.current.srcObject = stream;
+
+      // Wait until video is actually ready (fixes black screen)
+      await new Promise<void>((resolve, reject) => {
+        const v = videoRef.current!;
+        const onReady = () => {
+          v.removeEventListener("loadedmetadata", onReady);
+          resolve();
+        };
+        const onError = () => {
+          v.removeEventListener("loadedmetadata", onReady);
+          reject(new Error("Camera metadata load failed"));
+        };
+        v.addEventListener("loadedmetadata", onReady);
+        v.addEventListener("error", onError, { once: true });
+      });
+
+      await videoRef.current.play();
+      setStatus("ready");
+    } catch (err: any) {
+      setStatus("error");
+      setErrorMsg(
+        err?.message ||
+          "Camera failed. Try again, or allow permission in Chrome settings."
+      );
     }
   }
 
-  function captureImage() {
-    if (!videoRef.current || !canvasRef.current) return;
-
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL("image/png");
-    setPreviewUrl(dataUrl);
-
-    // Stop camera after capture
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    streamRef.current = null;
-
-    setStep("preview");
-  }
-
-  function resetAll() {
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    streamRef.current = null;
-    setPreviewUrl(null);
-    setStatus("");
-    setStep("select");
-  }
+  // IMPORTANT: stop camera when leaving page / refresh
+  useEffect(() => {
+    return () => {
+      stopCamera();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
-    <main style={{ padding: 24, fontFamily: "system-ui", maxWidth: 900 }}>
-      <h1 style={{ fontSize: 26, fontWeight: 900 }}>Scan OMR</h1>
-      <p style={{ marginTop: 6, opacity: 0.8 }}>
-        Module 5B: Real camera capture in browser
+    <main style={{ padding: 18, fontFamily: "system-ui" }}>
+      <h1 style={{ fontSize: 24, fontWeight: 800 }}>Scan</h1>
+      <p style={{ marginTop: 8, opacity: 0.8 }}>
+        Module 5B — Camera (stable start/stop + retry)
       </p>
 
-      <hr style={{ margin: "18px 0" }} />
+      <div style={{ marginTop: 16, display: "flex", gap: 10 }}>
+        <button
+          onClick={startCamera}
+          style={{
+            padding: "10px 14px",
+            borderRadius: 10,
+            border: "1px solid #333",
+          }}
+        >
+          Open Camera
+        </button>
 
-      {step === "select" && (
-        <section>
-          <h2 style={{ fontSize: 18, fontWeight: 900 }}>
-            Step 1 — Open Camera
-          </h2>
+        <button
+          onClick={stopCamera}
+          style={{
+            padding: "10px 14px",
+            borderRadius: 10,
+            border: "1px solid #333",
+          }}
+        >
+          Stop
+        </button>
 
-          <button
-            onClick={openCamera}
-            style={{
-              marginTop: 12,
-              padding: "10px 14px",
-              fontWeight: 900,
-              cursor: "pointer",
-            }}
-          >
-            Open Camera
-          </button>
-        </section>
-      )}
+        <button
+          onClick={startCamera}
+          style={{
+            padding: "10px 14px",
+            borderRadius: 10,
+            border: "1px solid #333",
+          }}
+        >
+          Retry
+        </button>
+      </div>
 
-      {step === "capture" && (
-        <section>
-          <h2 style={{ fontSize: 18, fontWeight: 900 }}>
-            Step 2 — Capture Image
-          </h2>
+      <div style={{ marginTop: 14 }}>
+        {status === "starting" && (
+          <p style={{ fontWeight: 700 }}>Starting camera… wait 2–5 sec</p>
+        )}
+        {status === "error" && (
+          <p style={{ color: "red", fontWeight: 700 }}>
+            Camera Error: {errorMsg}
+          </p>
+        )}
+      </div>
 
-          <video
-            ref={videoRef}
-            style={{
-              marginTop: 12,
-              width: "100%",
-              maxHeight: 420,
-              borderRadius: 12,
-              background: "#000",
-            }}
-            playsInline
-          />
+      <div
+        style={{
+          marginTop: 16,
+          borderRadius: 16,
+          overflow: "hidden",
+          border: "1px solid #333",
+          maxWidth: 520,
+        }}
+      >
+        <video
+          ref={videoRef}
+          playsInline
+          muted
+          style={{ width: "100%", display: "block" }}
+        />
+      </div>
 
-          <div style={{ marginTop: 12, display: "flex", gap: 10 }}>
-            <button
-              onClick={captureImage}
-              style={{ padding: "10px 14px", fontWeight: 900, cursor: "pointer" }}
-            >
-              Capture
-            </button>
-
-            <button
-              onClick={resetAll}
-              style={{ padding: "10px 14px", fontWeight: 900, cursor: "pointer" }}
-            >
-              Cancel
-            </button>
-          </div>
-        </section>
-      )}
-
-      {step === "preview" && (
-        <section>
-          <h2 style={{ fontSize: 18, fontWeight: 900 }}>
-            Step 3 — Preview
-          </h2>
-
-          {previewUrl && (
-            <img
-              src={previewUrl}
-              alt="Captured"
-              style={{
-                marginTop: 12,
-                width: "100%",
-                borderRadius: 12,
-                border: "1px solid #ddd",
-              }}
-            />
-          )}
-
-          <div style={{ marginTop: 12, display: "flex", gap: 10 }}>
-            <button
-              onClick={() =>
-                setStatus("✅ Image captured. Next: OpenCV scan (Module 6).")
-              }
-              style={{ padding: "10px 14px", fontWeight: 900, cursor: "pointer" }}
-            >
-              Continue
-            </button>
-
-            <button
-              onClick={resetAll}
-              style={{ padding: "10px 14px", fontWeight: 900, cursor: "pointer" }}
-            >
-              New Scan
-            </button>
-          </div>
-        </section>
-      )}
-
-      <canvas ref={canvasRef} style={{ display: "none" }} />
-
-      {status && <p style={{ marginTop: 16, fontWeight: 900 }}>{status}</p>}
+      <p style={{ marginTop: 12, opacity: 0.8, fontSize: 13 }}>
+        Tip: If it shows black, press <b>Retry</b>. If still stuck, press{" "}
+        <b>Stop</b> then <b>Open Camera</b>.
+      </p>
     </main>
   );
 }
