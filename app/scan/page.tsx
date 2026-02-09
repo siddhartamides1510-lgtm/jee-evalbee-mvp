@@ -16,18 +16,26 @@ export default function ScanPage() {
   const captureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const processedCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
+  // ✅ Overlay canvas (draw detections / X marks later)
+  const overlayRef = useRef<HTMLCanvasElement | null>(null);
+
   const [cvReady, setCvReady] = useState(false);
   const [status, setStatus] = useState<"idle" | "starting" | "ready" | "error">(
     "idle"
   );
   const [errorMsg, setErrorMsg] = useState<string>("");
 
+  // (keeping your state, even though not used yet)
+  const [lastBubbleCount, setLastBubbleCount] = useState(0);
+
   async function stopCamera() {
     try {
       const stream = streamRef.current;
       if (stream) stream.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
+
       if (videoRef.current) videoRef.current.srcObject = null;
+
       setStatus("idle");
       setErrorMsg("");
     } catch {
@@ -103,6 +111,21 @@ export default function ScanPage() {
     return true;
   }
 
+  // ✅ IMPORTANT: keep overlay canvas same size as processed canvas
+  function syncOverlayToProcessed() {
+    const outCanvas = processedCanvasRef.current;
+    const overlay = overlayRef.current;
+    if (!outCanvas || !overlay) return;
+
+    // match REAL pixel size
+    overlay.width = outCanvas.width;
+    overlay.height = outCanvas.height;
+
+    // clear it
+    const octx = overlay.getContext("2d");
+    if (octx) octx.clearRect(0, 0, overlay.width, overlay.height);
+  }
+
   function preprocessWithOpenCV() {
     if (!ensureCvReadyOrWarn()) return;
 
@@ -111,10 +134,8 @@ export default function ScanPage() {
     const outCanvas = processedCanvasRef.current;
     if (!srcCanvas || !outCanvas) return;
 
-    // Read captured image
     const src = cv.imread(srcCanvas);
 
-    // Preprocess: grayscale -> blur -> adaptive threshold
     const gray = new cv.Mat();
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
 
@@ -132,16 +153,42 @@ export default function ScanPage() {
       7
     );
 
-    // Show result
+    // show result
     outCanvas.width = thr.cols;
     outCanvas.height = thr.rows;
     cv.imshow(outCanvas, thr);
 
-    // Cleanup
+    // ✅ now overlay must match it
+    syncOverlayToProcessed();
+
     src.delete();
     gray.delete();
     blur.delete();
     thr.delete();
+  }
+
+  // ✅ Quick overlay test: draw red rectangle
+  function drawOverlayTestBox() {
+    const overlay = overlayRef.current;
+    if (!overlay) return;
+
+    const ctx = overlay.getContext("2d");
+    if (!ctx) return;
+
+    // Clear then draw
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+    ctx.strokeStyle = "red";
+    ctx.lineWidth = Math.max(4, Math.floor(overlay.width / 200));
+
+    const pad = Math.floor(overlay.width * 0.12);
+    const w = overlay.width - pad * 2;
+    const h = Math.floor(overlay.height * 0.25);
+
+    ctx.strokeRect(pad, pad, w, h);
+
+    // keep your unused state alive (optional)
+    setLastBubbleCount((x) => x + 1);
   }
 
   useEffect(() => {
@@ -153,12 +200,10 @@ export default function ScanPage() {
 
   return (
     <main style={{ padding: 18, fontFamily: "system-ui" }}>
-      {/* OpenCV script */}
       <Script
         src="https://docs.opencv.org/4.x/opencv.js"
         strategy="afterInteractive"
         onLoad={() => {
-          // OpenCV uses onRuntimeInitialized for WASM init
           const cv = window.cv;
           if (!cv) return;
           cv["onRuntimeInitialized"] = () => setCvReady(true);
@@ -171,8 +216,7 @@ export default function ScanPage() {
       </p>
 
       <p style={{ marginTop: 10, fontWeight: 800 }}>
-        OpenCV status:{" "}
-        {cvReady ? "✅ Ready" : "⏳ Loading (wait a few seconds)"}
+        OpenCV status: {cvReady ? "✅ Ready" : "⏳ Loading (wait a few seconds)"}
       </p>
 
       <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -199,6 +243,13 @@ export default function ScanPage() {
         >
           Capture + Preprocess
         </button>
+
+        <button
+          onClick={drawOverlayTestBox}
+          style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid #333" }}
+        >
+          Overlay Test (Red Box)
+        </button>
       </div>
 
       {status === "starting" && (
@@ -220,11 +271,29 @@ export default function ScanPage() {
           <canvas ref={captureCanvasRef} style={{ width: "100%", display: "block" }} />
         </div>
 
+        {/* ✅ PROCESSED + OVERLAY (correct structure) */}
         <div style={{ border: "1px solid #333", borderRadius: 14, overflow: "hidden" }}>
           <div style={{ padding: 8, fontWeight: 800, opacity: 0.8 }}>
             Processed (threshold)
           </div>
-          <canvas ref={processedCanvasRef} style={{ width: "100%", display: "block" }} />
+
+          <div style={{ position: "relative", width: "100%" }}>
+            <canvas
+              ref={processedCanvasRef}
+              style={{ width: "100%", display: "block" }}
+            />
+
+            <canvas
+              ref={overlayRef}
+              style={{
+                position: "absolute",
+                inset: 0,
+                width: "100%",
+                height: "100%",
+                pointerEvents: "none",
+              }}
+            />
+          </div>
         </div>
       </div>
 
