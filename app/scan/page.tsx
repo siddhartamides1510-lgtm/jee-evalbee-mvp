@@ -15,17 +15,11 @@ export default function ScanPage() {
 
   const captureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const processedCanvasRef = useRef<HTMLCanvasElement | null>(null);
-
-  // ✅ Overlay canvas (draw detections / X marks later)
   const overlayRef = useRef<HTMLCanvasElement | null>(null);
 
   const [cvReady, setCvReady] = useState(false);
-  const [status, setStatus] = useState<"idle" | "starting" | "ready" | "error">(
-    "idle"
-  );
-  const [errorMsg, setErrorMsg] = useState<string>("");
-
-  // (keeping your state, even though not used yet)
+  const [status, setStatus] = useState<"idle" | "starting" | "ready" | "error">("idle");
+  const [errorMsg, setErrorMsg] = useState("");
   const [lastBubbleCount, setLastBubbleCount] = useState(0);
 
   async function stopCamera() {
@@ -33,29 +27,18 @@ export default function ScanPage() {
       const stream = streamRef.current;
       if (stream) stream.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
-
       if (videoRef.current) videoRef.current.srcObject = null;
-
       setStatus("idle");
-      setErrorMsg("");
-    } catch {
-      // ignore
-    }
+    } catch {}
   }
 
   async function startCamera() {
     setStatus("starting");
-    setErrorMsg("");
-
     await stopCamera();
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: "environment" },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        },
+        video: { facingMode: { ideal: "environment" } },
         audio: false,
       });
 
@@ -64,25 +47,11 @@ export default function ScanPage() {
       if (!videoRef.current) throw new Error("Video element not found");
       videoRef.current.srcObject = stream;
 
-      await new Promise<void>((resolve, reject) => {
-        const v = videoRef.current!;
-        const onReady = () => {
-          v.removeEventListener("loadedmetadata", onReady);
-          resolve();
-        };
-        const onError = () => {
-          v.removeEventListener("loadedmetadata", onReady);
-          reject(new Error("Camera metadata load failed"));
-        };
-        v.addEventListener("loadedmetadata", onReady);
-        v.addEventListener("error", onError, { once: true });
-      });
-
       await videoRef.current.play();
       setStatus("ready");
     } catch (err: any) {
       setStatus("error");
-      setErrorMsg(err?.message || "Camera failed. Check permission.");
+      setErrorMsg(err?.message || "Camera failed.");
     }
   }
 
@@ -91,39 +60,33 @@ export default function ScanPage() {
     const c = captureCanvasRef.current;
     if (!v || !c) return;
 
-    const w = v.videoWidth || 1280;
-    const h = v.videoHeight || 720;
-
-    c.width = w;
-    c.height = h;
+    c.width = v.videoWidth;
+    c.height = v.videoHeight;
 
     const ctx = c.getContext("2d");
     if (!ctx) return;
 
-    ctx.drawImage(v, 0, 0, w, h);
+    ctx.drawImage(v, 0, 0);
   }
 
   function ensureCvReadyOrWarn() {
     if (!cvReady || !window.cv) {
-      alert("OpenCV is not ready yet. Wait 2–5 seconds and try again.");
+      alert("OpenCV not ready yet.");
       return false;
     }
     return true;
   }
 
-  // ✅ IMPORTANT: keep overlay canvas same size as processed canvas
-  function syncOverlayToProcessed() {
-    const outCanvas = processedCanvasRef.current;
+  function syncOverlay() {
+    const processed = processedCanvasRef.current;
     const overlay = overlayRef.current;
-    if (!outCanvas || !overlay) return;
+    if (!processed || !overlay) return;
 
-    // match REAL pixel size
-    overlay.width = outCanvas.width;
-    overlay.height = outCanvas.height;
+    overlay.width = processed.width;
+    overlay.height = processed.height;
 
-    // clear it
-    const octx = overlay.getContext("2d");
-    if (octx) octx.clearRect(0, 0, overlay.width, overlay.height);
+    const ctx = overlay.getContext("2d");
+    if (ctx) ctx.clearRect(0, 0, overlay.width, overlay.height);
   }
 
   function preprocessWithOpenCV() {
@@ -153,13 +116,12 @@ export default function ScanPage() {
       7
     );
 
-    // show result
     outCanvas.width = thr.cols;
     outCanvas.height = thr.rows;
     cv.imshow(outCanvas, thr);
 
-    // ✅ now overlay must match it
-    syncOverlayToProcessed();
+    syncOverlay();
+    setLastBubbleCount(0);
 
     src.delete();
     gray.delete();
@@ -167,35 +129,59 @@ export default function ScanPage() {
     thr.delete();
   }
 
-  // ✅ Quick overlay test: draw red rectangle
-  function drawOverlayTestBox() {
+  function detectBubblesAndDraw() {
+    if (!ensureCvReadyOrWarn()) return;
+
+    const cv = window.cv!;
+    const processed = processedCanvasRef.current;
     const overlay = overlayRef.current;
-    if (!overlay) return;
+    if (!processed || !overlay) return;
+
+    syncOverlay();
+
+    const src = cv.imread(processed);
+
+    const circles = new cv.Mat();
+
+    // 🔥 MUCH MORE SENSITIVE PARAMETERS
+    cv.HoughCircles(
+      gray,
+      circles,
+      cv.HOUGH_GRADIENT,
+      1.2,     // dp
+      12,      // minDist (lower = more detection)
+      100,     // param1
+      18,      // param2 (LOWER = MORE SENSITIVE)
+      6,       // minRadius
+      35       // maxRadius
+    );
 
     const ctx = overlay.getContext("2d");
-    if (!ctx) return;
+    if (ctx) {
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      ctx.strokeStyle = "lime";
+      ctx.lineWidth = 2;
 
-    // Clear then draw
-    ctx.clearRect(0, 0, overlay.width, overlay.height);
+      const count = circles.cols;
+      setLastBubbleCount(count);
 
-    ctx.strokeStyle = "red";
-    ctx.lineWidth = Math.max(4, Math.floor(overlay.width / 200));
+      for (let i = 0; i < circles.cols; i++) {
+        const x = circles.data32F[i * 3];
+        const y = circles.data32F[i * 3 + 1];
+        const r = circles.data32F[i * 3 + 2];
 
-    const pad = Math.floor(overlay.width * 0.12);
-    const w = overlay.width - pad * 2;
-    const h = Math.floor(overlay.height * 0.25);
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
 
-    ctx.strokeRect(pad, pad, w, h);
-
-    // keep your unused state alive (optional)
-    setLastBubbleCount((x) => x + 1);
+    src.delete();
+    circles.delete();
   }
 
   useEffect(() => {
-    return () => {
-      stopCamera();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => stopCamera();
   }, []);
 
   return (
@@ -211,95 +197,50 @@ export default function ScanPage() {
       />
 
       <h1 style={{ fontSize: 24, fontWeight: 900 }}>Scan (Module 6)</h1>
-      <p style={{ marginTop: 6, opacity: 0.8 }}>
-        Capture → OpenCV preprocess (grayscale + threshold) → show result
+
+      <p style={{ fontWeight: 800 }}>
+        OpenCV: {cvReady ? "✅ Ready" : "⏳ Loading..."}
       </p>
 
-      <p style={{ marginTop: 10, fontWeight: 800 }}>
-        OpenCV status: {cvReady ? "✅ Ready" : "⏳ Loading (wait a few seconds)"}
+      <p style={{ fontWeight: 800 }}>
+        Detected circles: {lastBubbleCount}
       </p>
 
-      <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
-        <button
-          onClick={startCamera}
-          style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid #333" }}
-        >
-          Open Camera
-        </button>
-
-        <button
-          onClick={stopCamera}
-          style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid #333" }}
-        >
-          Stop
-        </button>
-
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10 }}>
+        <button onClick={startCamera}>Open Camera</button>
+        <button onClick={stopCamera}>Stop</button>
         <button
           onClick={() => {
             captureFrameToCanvas();
             preprocessWithOpenCV();
           }}
-          style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid #333" }}
         >
           Capture + Preprocess
         </button>
-
-        <button
-          onClick={drawOverlayTestBox}
-          style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid #333" }}
-        >
-          Overlay Test (Red Box)
+        <button onClick={detectBubblesAndDraw}>
+          Detect Bubbles
         </button>
       </div>
 
-      {status === "starting" && (
-        <p style={{ marginTop: 10, fontWeight: 800 }}>Starting camera… wait 2–5 sec</p>
-      )}
-      {status === "error" && (
-        <p style={{ marginTop: 10, color: "red", fontWeight: 800 }}>
-          Camera Error: {errorMsg}
-        </p>
-      )}
+      <div style={{ marginTop: 20, maxWidth: 520 }}>
+        <video ref={videoRef} playsInline muted style={{ width: "100%" }} />
 
-      <div style={{ marginTop: 14, display: "grid", gap: 14, maxWidth: 520 }}>
-        <div style={{ border: "1px solid #333", borderRadius: 14, overflow: "hidden" }}>
-          <video ref={videoRef} playsInline muted style={{ width: "100%", display: "block" }} />
-        </div>
+        <canvas ref={captureCanvasRef} style={{ width: "100%", marginTop: 10 }} />
 
-        <div style={{ border: "1px solid #333", borderRadius: 14, overflow: "hidden" }}>
-          <div style={{ padding: 8, fontWeight: 800, opacity: 0.8 }}>Captured frame</div>
-          <canvas ref={captureCanvasRef} style={{ width: "100%", display: "block" }} />
-        </div>
-
-        {/* ✅ PROCESSED + OVERLAY (correct structure) */}
-        <div style={{ border: "1px solid #333", borderRadius: 14, overflow: "hidden" }}>
-          <div style={{ padding: 8, fontWeight: 800, opacity: 0.8 }}>
-            Processed (threshold)
-          </div>
-
-          <div style={{ position: "relative", width: "100%" }}>
-            <canvas
-              ref={processedCanvasRef}
-              style={{ width: "100%", display: "block" }}
-            />
-
-            <canvas
-              ref={overlayRef}
-              style={{
-                position: "absolute",
-                inset: 0,
-                width: "100%",
-                height: "100%",
-                pointerEvents: "none",
-              }}
-            />
-          </div>
+        <div style={{ position: "relative", marginTop: 10 }}>
+          <canvas ref={processedCanvasRef} style={{ width: "100%" }} />
+          <canvas
+            ref={overlayRef}
+            style={{
+              position: "absolute",
+              inset: 0,
+              width: "100%",
+              height: "100%",
+              pointerEvents: "none",
+            }}
+          />
         </div>
       </div>
-
-      <p style={{ marginTop: 10, opacity: 0.75, fontSize: 13 }}>
-        If processed image looks mostly black/white, that’s OK. We will tune thresholds later.
-      </p>
     </main>
   );
 }
