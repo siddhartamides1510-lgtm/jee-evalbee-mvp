@@ -140,12 +140,17 @@ export default function ScanPage() {
     syncOverlay();
 
     const src = cv.imread(processed);
+const gray = new cv.Mat();
+cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+
+const blur = new cv.Mat();
+cv.GaussianBlur(gray, blur, new cv.Size(5, 5), 0);
 
     const circles = new cv.Mat();
 
     // 🔥 MUCH MORE SENSITIVE PARAMETERS
     cv.HoughCircles(
-      gray,
+      blur,
       circles,
       cv.HOUGH_GRADIENT,
       1.2,     // dp
@@ -177,12 +182,17 @@ export default function ScanPage() {
     }
 
     src.delete();
-    circles.delete();
+
+circles.delete();
+
   }
 
   useEffect(() => {
-    return () => stopCamera();
-  }, []);
+  return () => {
+    stopCamera();
+  };
+}, []);
+
 
   return (
     <main style={{ padding: 18, fontFamily: "system-ui" }}>
